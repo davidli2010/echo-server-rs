@@ -1,27 +1,40 @@
+extern crate byteorder;
 extern crate env_logger;
 #[macro_use]
 extern crate log;
 
-use std::io::{Read, Write};
+use msg::*;
+use std::io::Result;
 use std::net::TcpStream;
 
-fn main() {
-    env_logger::init();
+pub mod msg;
 
-    let msg = "client message";
-    let mut buf = [0u8; 1024];
+fn main() -> Result<()> {
+    env_logger::init();
 
     info!("client is connecting to server");
 
-    let mut stream = TcpStream::connect("127.0.0.1:8000").unwrap();
+    let mut stream = TcpStream::connect("127.0.0.1:8000")?;
 
     info!("client is connected to server");
 
-    stream.write_all(msg.as_ref()).unwrap();
+    for i in 0..10 {
+        let msg = Msg::new_message("hello mio".to_string());
 
-    info!("client write {} bytes", msg.len());
+        msg.write(&mut stream)?;
 
-    let n = stream.read(&mut buf).unwrap();
+        info!("[{}]: client write {} bytes", i, msg.length());
 
-    info!("Receive {} bytes: {:?}", n, String::from_utf8_lossy(&buf[..n]));
+        let m = Msg::read(&mut stream)?;
+
+        info!("[{}]: Receive {} bytes", i, m.length());
+    }
+
+    let msg = Msg::new_disconnect();
+
+    msg.write(&mut stream)?;
+
+    info!("Send disconnect msg");
+
+    Ok(())
 }

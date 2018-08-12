@@ -1,12 +1,19 @@
+extern crate byteorder;
 extern crate env_logger;
 #[macro_use]
 extern crate log;
 extern crate mio;
 
+use conn::Conn;
 use mio::*;
 use mio::net::TcpListener;
+use msg::*;
 use std::collections::HashMap;
-use std::io::{Read, Result, Write};
+use std::io::ErrorKind;
+use std::io::Result;
+
+pub mod msg;
+pub mod conn;
 
 fn main() -> Result<()> {
     env_logger::init();
@@ -23,8 +30,7 @@ fn main() -> Result<()> {
                   Ready::readable(),
                   PollOpt::edge())?;
     let mut events = Events::with_capacity(1024);
-    let buf = &mut [0u8; 1024];
-    let mut num = 0;
+    let mut client_msg = String::new();
     let mut clients = HashMap::new();
 
     info!("Server is running");
@@ -39,37 +45,52 @@ fn main() -> Result<()> {
                     let client_id = client_id_counter;
                     client_id_counter += 1;
                     let token = Token(client_id);
+                    let connection = Conn::new(stream, token);
+                    trace!("Connection {}", connection.token().0);
 
-                    clients.insert(client_id, stream);
+                    clients.insert(client_id, connection);
 
-                    poll.register(&clients[&client_id],
-                                  token,
-                                  Ready::readable(),
-                                  PollOpt::edge())?;
+                    clients[&client_id].register(&poll, Ready::readable())?;
                 }
                 Token(client_id) => {
+                    let mut disconnect = false;
                     if event.readiness().is_readable() {
-                        let stream = clients.get_mut(&client_id).unwrap();
-                        match stream.read(buf) {
-                            Ok(n) => {
-                                num = n;
-                                trace!("Received {} bytes", n);
-                                poll.reregister(
-                                    stream,
-                                    Token(client_id),
-                                    Ready::writable(),
-                                    PollOpt::edge(),
-                                )?;
+                        let connection = clients.get_mut(&client_id).unwrap();
+                        let msg = match connection.read() {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                if e.kind() == ErrorKind::WouldBlock {
+                                    trace!("Read block");
+                                    connection.reregister(&poll, Ready::readable())?;
+                                    continue;
+                                } else {
+                                    return Err(e);
+                                }
                             }
-                            Err(e) => error!("read error {}", e)
+                        };
+                        match msg {
+                            Msg::Message { header, message } => {
+                                trace!("Received {} bytes", header.length());
+                                client_msg = message;
+                                connection.reregister(&poll, Ready::writable())?;
+                            }
+                            Msg::Disconnect { header: _ } => {
+                                trace!("Received disconnect msg");
+                                disconnect = true;
+                            }
                         }
                     }
+                    if disconnect {
+                        let mut connection = clients.remove(&client_id).unwrap();
+                        trace!("Disconnect {}", connection.token().0);
+                        continue;
+                    }
                     if event.readiness().is_writable() {
-                        let mut stream = clients.remove(&client_id).unwrap();
-                        match stream.write(&buf[..num]) {
-                            Ok(n) => trace!("write {} bytes", n),
-                            Err(e) => error!("write error {}", e)
-                        }
+                        let mut connection = clients.get_mut(&client_id).unwrap();
+                        let msg = Msg::new_message(client_msg.to_owned());
+                        connection.write(&msg)?;
+                        trace!("Write {} bytes", msg.length());
+                        connection.reregister(&poll, Ready::readable())?;
                     }
                 }
             }
