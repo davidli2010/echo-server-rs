@@ -9,7 +9,6 @@ pub trait Codec {
 }
 
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
-#[repr(C)]
 pub enum MsgCode {
     Message = 1,
     Disconnect = 2,
