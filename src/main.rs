@@ -14,7 +14,7 @@ pub mod server;
 fn main() -> Result<()> {
     env_logger::init();
 
-    let server = Server::new("127.0.0.1:8000")?;
+    let mut server = Server::new("127.0.0.1:8000")?;
 
     server.run()
 }

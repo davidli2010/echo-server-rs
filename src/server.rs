@@ -15,6 +15,8 @@ enum ReadState {
 pub struct Server {
     listener: TcpListener,
     poll: Poll,
+    client_id_counter: usize,
+    clients: HashMap<usize, Conn>,
 }
 
 impl Server {
@@ -26,14 +28,13 @@ impl Server {
         Ok(Server {
             listener,
             poll,
+            client_id_counter: 1,
+            clients: HashMap::new(),
         })
     }
 
-    pub fn run(&self) -> Result<()> {
-        let mut client_id_counter = 1;
+    pub fn run(&mut self) -> Result<()> {
         let mut events = Events::with_capacity(1024);
-        let mut client_msg = String::new();
-        let mut clients = HashMap::new();
 
         self.poll.register(&self.listener,
                            SERVER,
@@ -48,36 +49,19 @@ impl Server {
             for event in &events {
                 match event.token() {
                     SERVER => {
-                        self.accept(&mut client_id_counter, &mut clients)?;
+                        self.accept()?;
                     }
                     Token(client_id) => {
-                        let mut disconnect = false;
                         if event.readiness().is_readable() {
-                            let connection = clients.get_mut(&client_id).unwrap();
-                            let msg = match self.read(connection)? {
+                            let msg = match self.read(client_id)? {
                                 ReadState::Message(msg) => msg,
                                 ReadState::WouldBlock => continue,
                             };
-                            match msg {
-                                Msg::Message { header, message } => {
-                                    trace!("[{}] Received {} bytes", client_id, header.length());
-                                    client_msg = message;
-                                    connection.reregister(&self.poll, Ready::writable())?;
-                                }
-                                Msg::Disconnect { header: _ } => {
-                                    trace!("[{}] Received disconnect msg", client_id);
-                                    disconnect = true;
-                                }
-                            }
-                        }
-                        if disconnect {
-                            let mut _connection = clients.remove(&client_id).unwrap();
-                            trace!("[{}] Disconnect", client_id);
-                            continue;
+                            self.process_msg(msg, client_id)?;
                         }
                         if event.readiness().is_writable() {
-                            let mut connection = clients.get_mut(&client_id).unwrap();
-                            self.write(connection, &client_msg)?;
+                            self.send_message(client_id)?;
+                            self.reregister_client(client_id, Ready::readable())?;
                         }
                     }
                 }
@@ -85,27 +69,29 @@ impl Server {
         }
     }
 
-    fn accept(&self, client_id_counter: &mut usize, clients: &mut HashMap<usize, Conn>) -> Result<()> {
+    fn accept(&mut self) -> Result<()> {
         let (stream, _) = self.listener.accept()?;
-        let client_id = *client_id_counter;
-        *client_id_counter += 1;
+        let client_id = self.client_id_counter;
+        self.client_id_counter += 1;
         let token = Token(client_id);
-        let connection = Conn::new(stream, token);
-        trace!("[{}] Connection accepted", token.0);
+        let client = Conn::new(stream, token);
 
-        clients.insert(client_id, connection);
+        trace!("[{}] Client accepted", token.0);
 
-        clients[&client_id].register(&self.poll, Ready::readable())
+        client.register(&self.poll, Ready::readable())?;
+        self.clients.insert(client_id, client);
+
+        Ok(())
     }
 
-    fn read(&self, connection: &mut Conn) -> Result<ReadState> {
-        let client_id = connection.token().0;
-        match connection.read() {
+    fn read(&mut self, client_id: usize) -> Result<ReadState> {
+        let client = self.clients.get_mut(&client_id).unwrap();
+        match client.read() {
             Ok(msg) => Ok(ReadState::Message(msg)),
             Err(e) => {
                 if e.kind() == ErrorKind::WouldBlock {
                     trace!("[{}] Read block", client_id);
-                    connection.reregister(&self.poll, Ready::readable())?;
+                    client.reregister(&self.poll, Ready::readable())?;
                     return Ok(ReadState::WouldBlock);
                 } else {
                     return Err(e);
@@ -114,10 +100,44 @@ impl Server {
         }
     }
 
-    fn write(&self, connection: &mut Conn, client_msg: &str) -> Result<()> {
-        let msg = Msg::new_message(client_msg.to_string());
-        connection.write(&msg)?;
-        trace!("[{}] Write {} bytes", connection.token().0, msg.length());
-        connection.reregister(&self.poll, Ready::readable())
+    fn process_msg(&mut self, msg: Msg, client_id: usize) -> Result<()> {
+        match msg {
+            Msg::Message { header, message } => {
+                trace!("[{}] Received {} bytes", client_id, header.length());
+                self.save_message(client_id, message);
+                self.reregister_client(client_id, Ready::writable())?;
+            }
+            Msg::Disconnect { header: _ } => {
+                trace!("[{}] Received disconnect msg", client_id);
+                self.remove_client(client_id);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn reregister_client(&self, client_id: usize, interest: Ready) -> Result<()> {
+        self.clients[&client_id].reregister(&self.poll, interest)
+    }
+
+    fn remove_client(&mut self, client_id: usize) {
+        let mut _client = self.clients.remove(&client_id);
+        trace!("[{}] Disconnect", client_id);
+    }
+
+    fn save_message(&mut self, client_id: usize, client_msg: String) {
+        let client = self.clients.get_mut(&client_id).unwrap();
+        client.save_message(client_msg)
+    }
+
+    fn send_message(&mut self, client_id: usize) -> Result<()> {
+        let client = self.clients.get_mut(&client_id).unwrap();
+        if let Some(message) = client.take_message() {
+            let msg = Msg::new_message(message);
+            client.write(&msg)?;
+            trace!("[{}] Write {} bytes", client.token().0, msg.length());
+        }
+
+        Ok(())
     }
 }

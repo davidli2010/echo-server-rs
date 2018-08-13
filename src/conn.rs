@@ -1,8 +1,5 @@
+use mio::{Poll, PollOpt, Ready, Token};
 use mio::net::TcpStream;
-use mio::Poll;
-use mio::PollOpt;
-use mio::Ready;
-use mio::Token;
 use msg::{self, Codec, Msg, MsgHeader};
 use std::io::{Read, Result};
 
@@ -20,6 +17,7 @@ pub struct Conn {
     buffer: Vec<u8>,
     buf_len: usize,
     read_state: ReadState,
+    message: Option<String>,
 }
 
 impl Conn {
@@ -30,11 +28,20 @@ impl Conn {
             buffer: Vec::with_capacity(DEFAULT_BUFFER_SIZE),
             buf_len: 0,
             read_state: ReadState::Init,
+            message: None,
         }
     }
 
     pub fn token(&self) -> Token {
         self.token
+    }
+
+    pub fn save_message(&mut self, message: String) {
+        self.message = Some(message)
+    }
+
+    pub fn take_message(&mut self) -> Option<String> {
+        self.message.take()
     }
 
     pub fn register(&self, poll: &Poll, interest: Ready) -> Result<()> {
