@@ -24,7 +24,7 @@ impl MsgCode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct MsgHeader {
     length: u32,
     code: MsgCode,
@@ -74,6 +74,7 @@ pub fn msg_header_length() -> usize {
     size_of::<MsgHeader>()
 }
 
+#[derive(Debug, Eq, PartialEq)]
 pub enum Msg {
     Message {
         header: MsgHeader,

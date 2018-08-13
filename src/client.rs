@@ -23,11 +23,13 @@ fn main() -> Result<()> {
 
         msg.write(&mut stream)?;
 
-        info!("[{}]: client write {} bytes", i, msg.length());
+        info!("[{}] client write {} bytes: {:?}", i, msg.length(), msg);
 
-        let m = Msg::read(&mut stream)?;
+        let recv_msg = Msg::read(&mut stream)?;
 
-        info!("[{}]: Receive {} bytes", i, m.length());
+        info!("[{}] Receive {} bytes: {:?}", i, recv_msg.length(), recv_msg);
+
+        assert_eq!(msg, recv_msg);
     }
 
     let msg = Msg::new_disconnect();
