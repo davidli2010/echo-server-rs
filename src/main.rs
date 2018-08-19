@@ -3,6 +3,7 @@ extern crate env_logger;
 #[macro_use]
 extern crate log;
 extern crate mio;
+extern crate bytes;
 
 use server::Server;
 use std::io::Result;

@@ -1,3 +1,4 @@
+use bytes::{BytesMut};
 use mio::{Poll, PollOpt, Ready, Token};
 use mio::net::TcpStream;
 use msg::{self, Codec, Msg, MsgHeader};
@@ -14,7 +15,7 @@ enum ReadState {
 pub struct Conn {
     stream: TcpStream,
     token: Token,
-    buffer: Vec<u8>,
+    buffer: BytesMut,
     buf_len: usize,
     read_state: ReadState,
     message: Option<String>,
@@ -25,7 +26,7 @@ impl Conn {
         Conn {
             stream,
             token,
-            buffer: Vec::with_capacity(DEFAULT_BUFFER_SIZE),
+            buffer: BytesMut::with_capacity(DEFAULT_BUFFER_SIZE),
             buf_len: 0,
             read_state: ReadState::Init,
             message: None,
@@ -78,7 +79,7 @@ impl Conn {
                     if buf_len < msg::msg_header_length() {
                         self.read_exact(msg::msg_header_length() - buf_len)?;
                     } else {
-                        let mut buf = &self.buffer.as_mut_slice()[0..msg::msg_header_length()];
+                        let mut buf = &self.buffer[0..msg::msg_header_length()];
                         let header = MsgHeader::read(&mut buf)?;
                         self.read_state = ReadState::Body(header.length() as usize);
                     }
@@ -88,7 +89,7 @@ impl Conn {
                     if buf_len < length {
                         self.read_exact(length - buf_len)?;
                     } else {
-                        let mut buf = &self.buffer.as_mut_slice()[0..length];
+                        let mut buf = &self.buffer[0..length];
                         let msg = Msg::read(&mut buf)?;
                         self.read_state = ReadState::Init;
                         return Ok(msg);
@@ -106,7 +107,7 @@ impl Conn {
             unsafe { self.buffer.set_len(buf_len + len) }
         }
 
-        let mut buf = &mut self.buffer.as_mut_slice()[buf_len..buf_len + len];
+        let mut buf = &mut self.buffer[buf_len..buf_len + len];
         let size = self.stream.read(&mut buf)?;
         self.buf_len += size;
         Ok(())
