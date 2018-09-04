@@ -1,11 +1,14 @@
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use bytes::{BufMut, BytesMut};
 use std::io::{Read, Result, Write};
-use std::io::{Error, ErrorKind};
+use std::io::{self, Error, ErrorKind};
 use std::mem::size_of;
+use tokio_codec::{Decoder, Encoder};
 
 pub trait Codec {
     fn read(buffer: &mut impl Read) -> Result<Self> where Self: Sized;
     fn write(&self, buffer: &mut impl Write) -> Result<()>;
+    fn write_bytes(&self, dst: &mut BytesMut);
 }
 
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
@@ -67,10 +70,15 @@ impl Codec for MsgHeader {
         buffer.write_u32::<LittleEndian>(self.code as u32)?;
         Ok(())
     }
+
+    fn write_bytes(&self, dst: &mut BytesMut) {
+        dst.put_u32_le(self.length);
+        dst.put_u32_le(self.code as u32);
+    }
 }
 
 #[inline]
-pub fn msg_header_length() -> usize {
+fn msg_header_length() -> usize {
     size_of::<MsgHeader>()
 }
 
@@ -121,8 +129,17 @@ impl Msg {
         Ok(())
     }
 
+    fn write_message_bytes(header: &MsgHeader, message: &str, dst: &mut BytesMut) {
+        header.write_bytes(dst);
+        dst.put_slice(message.as_bytes());
+    }
+
     fn write_disconnect(buffer: &mut impl Write, header: &MsgHeader) -> Result<()> {
         header.write(buffer)
+    }
+
+    fn write_disconnect_bytes(header: &MsgHeader, dst: &mut BytesMut) {
+        header.write_bytes(dst);
     }
 
     fn read_message(header: MsgHeader, buffer: &mut impl Read) -> Result<Msg> {
@@ -156,6 +173,61 @@ impl Codec for Msg {
             Msg::Disconnect { header } => Msg::write_disconnect(buffer, header)?,
         }
         Ok(())
+    }
+
+    fn write_bytes(&self, dst: &mut BytesMut) {
+        match self {
+            Msg::Message { header, message } => Msg::write_message_bytes(header, message, dst),
+            Msg::Disconnect { header } => Msg::write_disconnect_bytes(header, dst),
+        }
+    }
+}
+
+pub struct MsgCodec {
+    msg_len: usize,
+}
+
+impl MsgCodec {
+    pub fn new() -> MsgCodec {
+        MsgCodec {
+            msg_len: 0,
+        }
+    }
+}
+
+impl Encoder for MsgCodec {
+    type Item = Msg;
+    type Error = io::Error;
+
+    fn encode(&mut self, item: Msg, dst: &mut BytesMut) -> Result<()> {
+        dst.reserve(item.length() as usize);
+        item.write_bytes(dst);
+        Ok(())
+    }
+}
+
+impl Decoder for MsgCodec {
+    type Item = Msg;
+    type Error = io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Msg>> {
+        if src.len() < msg_header_length() {
+            return Ok(None);
+        } else if self.msg_len == 0 {
+            let mut buf = &src[0..msg_header_length()];
+            let header = MsgHeader::read(&mut buf)?;
+            self.msg_len = header.length() as usize;
+        }
+
+        if self.msg_len <= src.len() {
+            let buf = src.split_to(self.msg_len);
+            let mut buf = &buf[0..self.msg_len];
+            self.msg_len = 0;
+            let msg = Msg::read(&mut buf)?;
+            Ok(Some(msg))
+        } else {
+            Ok(None)
+        }
     }
 }
 

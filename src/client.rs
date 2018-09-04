@@ -1,7 +1,9 @@
 extern crate byteorder;
+extern crate bytes;
 extern crate env_logger;
 #[macro_use]
 extern crate log;
+extern crate tokio_codec;
 
 use msg::*;
 use std::io::Result;
